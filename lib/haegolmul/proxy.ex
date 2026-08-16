@@ -9,11 +9,32 @@ defmodule Haegolmul.Proxy do
   - the raw query string
   - end-to-end request headers
 
-  Request bodies and response headers will be added in later iterations.
+  At this stage, Haegolmul forwards:
+
+  - the HTTP method
+  - the request path
+  - the raw query string
+  - end-to-end request headers
+  - request bodies up to the configured size limit
+
+  Response headers and streaming request bodies will be added
+  in later iterations.
 
   Hop-by-hop headers are deliberately removed because they describe the
   connection between two HTTP peers rather than the request itself.
   """
+  # Haegolmul currently buffers request bodies in memory before forwarding
+  # them to the upstream.
+  #
+  # This keeps the first implementation simple and allows us to understand
+  # the complete request lifecycle before introducing streaming.
+  #
+  # Because buffering arbitrary amounts of attacker-controlled data would
+  # itself create a denial-of-service risk, we enforce a strict upper limit.
+  #
+  # A future version should stream large request bodies to the upstream
+  # instead of accumulating them in memory.
+  @max_body_size 1_000_000
 
   @upstream "http://localhost:4000"
 
@@ -30,6 +51,7 @@ defmodule Haegolmul.Proxy do
   # Note that the `connection` header is special: it may name additional
   # headers that are hop-by-hop for this particular request. We handle
   # those dynamically below.
+
   @hop_by_hop_headers [
     "connection",
     "keep-alive",
@@ -51,21 +73,47 @@ defmodule Haegolmul.Proxy do
   """
   def forward(conn) do
     url = build_upstream_url(conn)
-
-    # Prepare request headers for the new connection between Haegolmul
-    # and the upstream server.
-    #
-    # We do not pass `conn.req_headers` directly because some headers
-    # describe only the client -> Haegolmul connection.
     headers = build_upstream_headers(conn)
 
-    request =
-      Finch.build(
-        conn.method,
-        url,
-        headers
-      )
+    # Reading the request body may require multiple reads.
+    #
+    # Therefore this function returns both the body and the updated
+    # Plug.Conn. The updated connection must be used from this point on.
+    case read_request_body(conn) do
+      {:ok, body, conn} ->
+        request =
+          Finch.build(
+            conn.method,
+            url,
+            headers,
+            body
+          )
 
+        forward_request(conn, request)
+
+      {:error, :too_large, conn} ->
+        # HTTP 413 means that the request body exceeds the size the
+        # server is willing to process.
+        Plug.Conn.send_resp(
+          conn,
+          413,
+          "request body too large"
+        )
+    end
+  end
+
+  # Send the prepared request to the upstream and translate the resulting
+  # Finch response back into the original Plug connection.
+  #
+  # Keeping this separate from `forward/1` makes the responsibilities clearer:
+  #
+  #   forward/1
+  #       -> prepare the outgoing request
+  #
+  #   forward_request/2
+  #       -> perform the upstream I/O
+  #
+  defp forward_request(conn, request) do
     case Finch.request(request, Haegolmul.Finch) do
       {:ok, response} ->
         Plug.Conn.send_resp(
@@ -114,6 +162,7 @@ defmodule Haegolmul.Proxy do
   #
   # Hop-by-hop headers are different. They control a specific connection
   # and must not be blindly forwarded to the next HTTP peer.
+
   defp build_upstream_headers(conn) do
     # The `Connection` header can declare arbitrary additional headers
     # as hop-by-hop.
@@ -179,4 +228,57 @@ defmodule Haegolmul.Proxy do
     |> Enum.reject(&(&1 == ""))
     |> Enum.map(&String.downcase/1)
   end
+
+  # Read the complete incoming request body while enforcing a maximum size.
+  #
+  # Plug may return the body in multiple chunks. We therefore delegate to a
+  # recursive helper that accumulates chunks until the complete body has
+  # been received.
+  defp read_request_body(conn) do
+    read_request_body(conn, [], 0)
+  end
+
+
+  # The accumulator contains chunks in reverse order.
+  #
+  # Prepending to a list is cheap in Elixir:
+  #
+  #   [new_chunk | chunks]
+  #
+  # whereas repeatedly concatenating binaries would create unnecessary
+  # intermediate binaries.
+  #
+  # Once all chunks have been received, we reverse the list and convert it
+  # into the final binary.
+  defp read_request_body(conn, chunks, size) do
+    case Plug.Conn.read_body(conn) do
+      {:ok, chunk, conn} ->
+        new_size = size + byte_size(chunk)
+
+        if new_size > @max_body_size do
+          {:error, :too_large, conn}
+        else
+          body =
+            [chunk | chunks]
+            |> Enum.reverse()
+            |> IO.iodata_to_binary()
+
+          {:ok, body, conn}
+        end
+
+      {:more, chunk, conn} ->
+        new_size = size + byte_size(chunk)
+
+        if new_size > @max_body_size do
+          {:error, :too_large, conn}
+        else
+          read_request_body(
+            conn,
+            [chunk | chunks],
+            new_size
+          )
+        end
+    end
+  end
+
 end
