@@ -105,17 +105,28 @@ defmodule Haegolmul.Proxy do
   # Send the prepared request to the upstream and translate the resulting
   # Finch response back into the original Plug connection.
   #
-  # Keeping this separate from `forward/1` makes the responsibilities clearer:
+  # A reverse proxy has to translate both sides of HTTP communication:
   #
-  #   forward/1
-  #       -> prepare the outgoing request
+  #   client request  -> upstream request
+  #   upstream response -> client response
   #
-  #   forward_request/2
-  #       -> perform the upstream I/O
+  # The upstream response consists of three important parts:
   #
+  #   status
+  #   headers
+  #   body
+  #
+  # Until now we only forwarded the status and body. We now also preserve
+  # end-to-end response headers.
   defp forward_request(conn, request) do
     case Finch.request(request, Haegolmul.Finch) do
       {:ok, response} ->
+        conn =
+          forward_response_headers(
+            conn,
+            response.headers
+          )
+
         Plug.Conn.send_resp(
           conn,
           response.status,
@@ -129,6 +140,87 @@ defmodule Haegolmul.Proxy do
           "upstream error: #{inspect(reason)}"
         )
     end
+  end
+
+  # Copy end-to-end response headers from the upstream response into
+  # the Plug connection that will be returned to the original client.
+  #
+  # Plug initializes a few response headers itself, including a default
+  # `cache-control` value. Before copying upstream headers, we therefore
+  # remove any existing header whose name is explicitly supplied by the
+  # upstream.
+  #
+  # Most response headers can then be installed with `put_resp_header/3`.
+  # `set-cookie` is handled separately because multiple Set-Cookie fields
+  # must remain separate HTTP header fields.
+  defp forward_response_headers(conn, headers) do
+    connection_headers =
+      headers
+      |> header_values("connection")
+      |> Enum.flat_map(&split_header_names/1)
+
+    blocked_headers =
+      MapSet.new(@hop_by_hop_headers ++ connection_headers)
+
+    forwarded_headers =
+      headers
+      |> Enum.reject(fn {name, _value} ->
+        MapSet.member?(
+          blocked_headers,
+          String.downcase(name)
+        )
+      end)
+      |> Enum.map(fn {name, value} ->
+        {String.downcase(name), value}
+      end)
+
+    # Collect every unique header name supplied by the upstream.
+    #
+    # We remove these fields from the existing Plug response first.
+    # This is important because Plug starts with a default Cache-Control
+    # header that should not survive if the upstream supplied its own one.
+    upstream_header_names =
+      forwarded_headers
+      |> Enum.map(fn {name, _value} -> name end)
+      |> MapSet.new()
+
+    conn =
+      Enum.reduce(upstream_header_names, conn, fn name, conn ->
+        Plug.Conn.delete_resp_header(conn, name)
+      end)
+
+    # Handle ordinary response headers.
+    #
+    # put_resp_header/3 replaces an existing value for a header name,
+    # which is exactly what we want for fields such as Content-Type,
+    # Cache-Control, Location, ETag, and so on.
+    conn =
+      forwarded_headers
+      |> Enum.reject(fn {name, _value} ->
+        name == "set-cookie"
+      end)
+      |> Enum.reduce(conn, fn {name, value}, conn ->
+        Plug.Conn.put_resp_header(conn, name, value)
+      end)
+
+    # Set-Cookie is special.
+    #
+    # An HTTP response may legitimately contain multiple Set-Cookie
+    # fields, and combining them into one field can change their meaning.
+    #
+    # Plug stores response headers as a list of {name, value} tuples, so
+    # we prepend each Set-Cookie field directly after removing any old
+    # Set-Cookie values above.
+    set_cookie_headers =
+      Enum.filter(forwarded_headers, fn {name, _value} ->
+        name == "set-cookie"
+      end)
+
+    %{
+      conn
+      | resp_headers:
+          set_cookie_headers ++ conn.resp_headers
+    }
   end
 
   # Build the complete URL used for the outgoing request.
@@ -199,13 +291,16 @@ defmodule Haegolmul.Proxy do
     end)
   end
 
-  # Return all values for a given request header.
+  # Return all values for a given header name.
   #
-  # HTTP permits multiple fields with the same name, so we deliberately
-  # return a list instead of assuming that only one value exists.
+  # HTTP field names are case-insensitive. Normalizing both sides prevents
+  # the proxy logic from depending on how a particular HTTP implementation
+  # chose to capitalize a field name.
   defp header_values(headers, name) do
+    normalized_name = String.downcase(name)
+
     for {header_name, value} <- headers,
-        header_name == name,
+        String.downcase(header_name) == normalized_name,
         do: value
   end
 
