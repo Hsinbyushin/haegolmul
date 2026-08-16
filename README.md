@@ -6,201 +6,174 @@
   A lightweight, bot-aware reverse proxy written in Elixir.
 </p>
 
-> **Status:** Haegolmul is currently an experimental project under active development.
-> It is not ready for production use.
 
-## What is Haegolmul?
+## About
 
-Haegolmul is an experimental reverse proxy designed to protect web applications from aggressive bots, scrapers, and automated traffic.
+Haegolmul is an experimental reverse proxy and bot-protection system written
+in Elixir.
 
-Instead of trying to definitively determine whether a client is a human or a bot, Haegolmul evaluates what it can actually observe about an incoming request.
+The project is inspired by systems such as Anubis, but is being developed
+independently as both a learning project and an exploration of how the
+BEAM/OTP model can be used to build resilient network infrastructure.
 
-Based on those observations, a request receives a verdict:
+The long-term goal is to place Haegolmul in front of an existing web
+application and evaluate incoming requests before allowing them to reach the
+upstream service.
 
-```text
-                         Request
-                            │
-                            ▼
-                       Observation
-                            │
-              ┌─────────────┼─────────────┐
-              │             │             │
-           Headers         Rate        Behaviour
-              │             │             │
-              └─────────────┼─────────────┘
-                            │
-                            ▼
-                         Policy
-                            │
-                            ▼
-                         Verdict
-                            │
-                 ┌──────────┼──────────┐
-                 │          │          │
-                 ▼          ▼          ▼
-               ALLOW    CHALLENGE     DENY
-                 │
-                 ▼
-              Upstream
-```
-
-Clients considered suspicious may be asked to perform a computational challenge before they are allowed to reach the upstream application.
-
-The project is inspired in part by [Anubis](https://github.com/TecharoHQ/anubis), while exploring how such a system can be designed around Elixir, OTP, functional programming, and the BEAM.
-
-## Why "Haegolmul"?
-
-**Haegolmul (해골물)** means roughly **"skull water"** in Korean.
-
-The name refers to a famous story associated with the Korean Buddhist philosopher **Wonhyo (원효)**.
-
-According to the traditional story, Wonhyo awoke during the night feeling extremely thirsty. In the darkness, he found water and drank from it. The water seemed refreshing and satisfying.
-
-When daylight came, he discovered that the water he had enjoyed had been collected in a human skull. Upon seeing what he had actually drunk, his perception of the same water changed completely.
-
-The story is traditionally associated with Wonhyo's insight into the role of mind and perception.
-
-That idea provides the guiding metaphor for Haegolmul:
-
-> **We do not know what a client is. We judge what we can observe.**
-
-A User-Agent does not make a client human.
-
-An IP address does not make a client malicious.
-
-Executing JavaScript does not prove that a client is legitimate.
-
-Haegolmul therefore treats bot detection as the evaluation of **evidence**, rather than an attempt to establish an absolute identity.
-
-## Design goals
-
-Haegolmul aims to be:
-
-* **Lightweight** — suitable as a small service in front of an existing application.
-* **Observable** — decisions should be explainable rather than mysterious.
-* **Stateless where possible** — clients should not force the server to maintain expensive per-challenge state.
-* **Composable** — policies should consist of small, understandable rules.
-* **Resilient** — hostile traffic should not easily exhaust the protection layer itself.
-* **Protocol-conscious** — proxy behavior should be predictable and correct.
-* **Educational** — the project intentionally explores how a security-oriented network service can be designed using Elixir and OTP.
-
-## Planned architecture
+Conceptually:
 
 ```text
-                           Internet
-                              │
-                              ▼
-                     ┌─────────────────┐
-                     │     Bandit      │
-                     │   HTTP Server   │
-                     └────────┬────────┘
-                              │
-                              ▼
-                     ┌─────────────────┐
-                     │   Haegolmul     │
-                     │   Observation   │
-                     └────────┬────────┘
-                              │
-                              ▼
-                     ┌─────────────────┐
-                     │  Policy Engine  │
-                     └────────┬────────┘
-                              │
-                  ┌───────────┼───────────┐
-                  │           │           │
-                  ▼           ▼           ▼
-                ALLOW     CHALLENGE      DENY
-                  │           │
-                  │           ▼
-                  │     Proof of Work
-                  │           │
-                  │      valid token
-                  │           │
-                  └───────────┤
-                              │
-                              ▼
-                     ┌─────────────────┐
-                     │  Reverse Proxy  │
-                     └────────┬────────┘
-                              │
-                              ▼
-                           Upstream
+                 Internet
+                    │
+                    ▼
+              ┌───────────┐
+              │ Haegolmul │
+              └─────┬─────┘
+                    │
+             allowed requests
+                    │
+                    ▼
+              ┌───────────┐
+              │ Upstream  │
+              │   App     │
+              └───────────┘
 ```
 
-The initial implementation uses:
+Eventually, requests will pass through a decision pipeline:
 
-* **Elixir / OTP** for the application and supervision model
-* **Bandit** as the HTTP server
-* **Plug** as the HTTP request/response abstraction
-* **Finch** for upstream HTTP connections
+```text
+Request
+   │
+   ▼
+Observation
+   │
+   ▼
+Policy
+   │
+   ▼
+Verdict
+   │
+   ├── allow
+   ├── challenge
+   └── deny
+```
 
-The policy engine, challenge system, token format, proof-of-work validation, and mitigation logic are intended to remain part of Haegolmul itself.
+The bot-protection layer has not been implemented yet. The current development
+focus is building and understanding the HTTP reverse-proxy foundation on which
+that system will operate.
 
-## Roadmap
+## Current Status
 
-### v0.1 — Proof of concept
+Haegolmul currently implements a minimal HTTP reverse proxy using:
 
-* [x] OTP application
-* [x] Bandit HTTP server
-* [x] Basic Plug routing
-* [x] HTTP tests
-* [ ] Reverse proxy
-* [ ] Request observation
-* [ ] Policy engine
-* [ ] `allow`, `challenge`, and `deny` verdicts
-* [ ] Signed challenge tokens
-* [ ] SHA-256 proof-of-work challenge
-* [ ] Browser challenge page
-* [ ] Temporary access tokens/cookies
-* [ ] Basic rate limiting
-* [ ] Structured logging
-* [ ] Health endpoint
-* [ ] Docker image
+- **Bandit** as the HTTP server
+- **Plug** for the HTTP request/response abstraction and routing
+- **Finch** as the HTTP client used to communicate with upstream services
 
-### Later
+The current proxy can forward:
 
-Potential future work includes:
+### Requests
 
-* weighted policies
-* IP/CIDR policies
-* trusted proxy handling
-* configurable challenge difficulty
-* key rotation
-* Prometheus metrics
-* streaming proxy support
-* WebSocket support
-* more sophisticated client observations
-* load and adversarial testing
+- HTTP methods
+- request paths
+- raw query strings
+- end-to-end request headers
+- request bodies
+
+Request bodies are currently buffered in memory and limited to approximately
+1 MB. A future version should support streaming and backpressure instead.
+
+Hop-by-hop headers are removed before requests are sent to the upstream.
+
+### Responses
+
+Haegolmul currently forwards:
+
+- HTTP status codes
+- response headers
+- response bodies
+- multiple `Set-Cookie` headers
+
+Hop-by-hop response headers are filtered before the response is returned to
+the client.
+
+This means the current request path looks approximately like this:
+
+```text
+Client
+  │
+  │ HTTP request
+  ▼
+Bandit
+  │
+  ▼
+Plug.Conn
+  │
+  ▼
+Haegolmul.HTTP
+  │
+  ▼
+Haegolmul.Proxy
+  │
+  ▼
+Finch
+  │
+  ▼
+Upstream
+  │
+  │ HTTP response
+  ▼
+Finch
+  │
+  ▼
+Haegolmul.Proxy
+  │
+  ▼
+Bandit
+  │
+  ▼
+Client
+```
+
+## Security Considerations
+
+Haegolmul is currently experimental software and **must not be considered
+production-ready**.
+
+Several security-relevant behaviors are already intentionally handled.
+
+### Hop-by-hop headers
+
+A reverse proxy terminates one HTTP connection and creates another:
+
+```text
+Client <──── connection A ────> Haegolmul
+Haegolmul <── connection B ───> Upstream
+```
+
+Headers describing connection A must not blindly be copied to connection B,
+and vice versa.
+
+Haegolmul therefore filters known hop-by-hop headers and also respects
+additional hop-by-hop header names declared through the HTTP `Connection`
+header.
+
+### Request body limits
+
+Request bodies are currently buffered before being sent upstream.
+
+Because allowing an attacker to make the proxy buffer arbitrary amounts of
+data would itself create a denial-of-service risk, Haegolmul currently rejects
+request bodies larger than the configured limit.
+
+Large-body streaming will be investigated in a later development phase.
 
 ## Development
-
-Requirements:
-
-* Elixir
-* Erlang/OTP
 
 Install dependencies:
 
 ```bash
 mix deps.get
-```
-
-Run the development server:
-
-```bash
-mix run --no-halt
-```
-
-Haegolmul currently listens on:
-
-```text
-http://localhost:8080
-```
-
-Test it with:
-
-```bash
-curl -i http://localhost:8080
 ```
 
 Run the test suite:
@@ -209,24 +182,60 @@ Run the test suite:
 mix test
 ```
 
-## Security
+Start Haegolmul:
 
-Haegolmul is currently a learning and research project.
+```bash
+mix run --no-halt
+```
 
-**Do not use it as a security boundary for production systems yet.**
+The development server currently listens on:
 
-Anti-bot systems operate in an adversarial environment. A proof-of-work challenge does not prove that a client is human, and heuristics can produce both false positives and false negatives.
+```text
+http://localhost:8080
+```
 
-The goal is not to make automated access impossible.
+and proxies requests to the development upstream at:
 
-The goal is to make abusive automated access **more expensive while keeping legitimate access inexpensive**.
+```text
+http://localhost:4000
+```
 
-## Inspiration
+These values are currently hard-coded for development and will later move into
+application configuration.
 
-Haegolmul is inspired by the ideas behind [Anubis](https://github.com/TecharoHQ/anubis), particularly the use of client-side computational challenges to increase the cost of large-scale automated scraping.
+## Roadmap
 
-Haegolmul is not a port of Anubis. It is an independent implementation intended to explore a similar problem through the architecture and concurrency model of Elixir/OTP.
+The immediate development plan is:
+
+1. Add automated integration tests for the complete proxy path.
+2. Replace the external development test server with a controlled test
+   upstream for ExUnit.
+3. Introduce an observation model for incoming requests.
+4. Implement policy evaluation.
+5. Introduce explicit verdicts such as `allow`, `challenge`, and `deny`.
+6. Design the first bot-detection and challenge mechanisms.
+7. Move upstream and server settings into configuration.
+8. Investigate streaming request and response bodies.
+9. Add observability, metrics, and structured logging.
+10. Harden the proxy for adversarial traffic.
+
+## Name
+
+The name **Haegolmul** (해골물, literally "skull water") refers to a famous
+story associated with the Korean Buddhist monk Wonhyo.
+
+According to the traditional account, Wonhyo woke during the night while
+travelling and drank what he believed to be fresh water from a container.
+In daylight he discovered that the water had actually been collected inside
+a human skull.
+
+The experience became associated with his realization that perception and
+the mind fundamentally shape how reality is experienced.
+
+The name fits the project because Haegolmul similarly does not merely ask
+what a request appears to be at first glance. It observes the request and
+attempts to determine what is actually behind it.
 
 ## License
 
-License to be determined.
+TBD
