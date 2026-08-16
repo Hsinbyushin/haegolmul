@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/haegolmul-logo.png" alt="Haegolmul logo" width="320">
+  <img src="assets/haegolmul-logo.png" alt="Haegolmul logo" width="500">
 </p>
 
 <p align="center">
