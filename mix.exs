@@ -23,7 +23,8 @@ defmodule Haegolmul.MixProject do
   defp deps do
     [
       {:bandit, "~> 1.0"},
-      {:plug, "~> 1.0"}
+      {:plug, "~> 1.0"},
+      {:finch, "~> 0.21"}
     ]
   end
 end
